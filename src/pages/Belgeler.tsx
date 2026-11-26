@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState, type RefObject } from 'react'
 import { useParams } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { ayarOku, db } from '../db'
 import { ODEME_ADI, TUR_ADI, bakiyeSeyri, bugunStr, gunEkle, ozetHesapla } from '../lib/cari'
 import { miktarYaz, tl } from '../lib/para'
 import { tarihYaz, BOS_LISTE } from '../components/Ortak'
+import { whatsappDosyaGonder } from '../lib/whatsappDosya'
 
 export interface Dukkan {
   ad: string
@@ -30,13 +31,43 @@ function Baslik({ dukkan, belge }: { dukkan: Dukkan; belge: string }) {
   )
 }
 
-function Araclar() {
+interface WhatsappBilgi {
+  belgeRef: RefObject<HTMLDivElement | null>
+  dosyaAdi: string
+  telefon?: string
+  mesaj: string
+}
+
+function Araclar({ wp }: { wp?: WhatsappBilgi }) {
+  const [hazirlaniyor, setHazirlaniyor] = useState(false)
+  const [bilgi, setBilgi] = useState('')
+
+  async function gonder() {
+    if (!wp?.belgeRef.current) return
+    setHazirlaniyor(true)
+    setBilgi('')
+    try {
+      const sonuc = await whatsappDosyaGonder(wp.belgeRef.current, wp.dosyaAdi, wp.telefon ?? '', wp.mesaj)
+      if (sonuc === 'indirildi')
+        setBilgi('PDF indirildi. Açılan WhatsApp sohbetine dosyayı sürükleyin veya ataç (📎) ile ekleyin.')
+    } catch (e) {
+      setBilgi('PDF hazırlanamadı: ' + (e as Error).message)
+    } finally {
+      setHazirlaniyor(false)
+    }
+  }
+
   return (
     <div className="belge-araclar yazdirma">
       <button className="btn" onClick={() => window.print()}>
         🖨 Yazdır / PDF kaydet
       </button>
-      <span className="soluk kucuk">PDF için yazıcı olarak “PDF olarak kaydet”i seçin.</span>
+      {wp && (
+        <button className="btn" onClick={gonder} disabled={hazirlaniyor}>
+          {hazirlaniyor ? 'PDF hazırlanıyor…' : '💬 WhatsApp’a gönder (PDF)'}
+        </button>
+      )}
+      <span className="soluk kucuk">{bilgi || 'PDF için yazıcı olarak “PDF olarak kaydet”i seçin.'}</span>
     </div>
   )
 }
@@ -45,6 +76,7 @@ export function Ekstre() {
   const id = Number(useParams().id)
   const [bas, setBas] = useState('')
   const [son, setSon] = useState(bugunStr())
+  const belgeRef = useRef<HTMLDivElement>(null)
   const veri = useLiveQuery(async () => {
     const [musteri, hareketler, dukkan] = await Promise.all([
       db.musteriler.get(id),
@@ -75,9 +107,18 @@ export function Ekstre() {
   const borc = hesap.icinde.reduce((t, x) => t + Math.max(0, x.hareket.borcEtkisi), 0)
   const alacak = hesap.icinde.reduce((t, x) => t + Math.max(0, -x.hareket.borcEtkisi), 0)
 
+  const sonBakiye = hesap.icinde.length ? hesap.icinde[hesap.icinde.length - 1].bakiye : hesap.devreden
+
   return (
-    <div className="belge">
-      <Araclar />
+    <div className="belge" ref={belgeRef}>
+      <Araclar
+        wp={{
+          belgeRef,
+          dosyaAdi: `Ekstre-${musteri.ad}-${son}`,
+          telefon: musteri.telefon,
+          mesaj: `Sayın ${musteri.ad}, ${dukkan.ad || 'dükkânımız'} hesap ekstreniz ektedir. Güncel bakiye: ${tl(hesap.ozet.bakiye)}`,
+        }}
+      />
       <div className="belge-araclar yazdirma">
         <label>
           Başlangıç <input type="date" value={bas} onChange={(e) => setBas(e.target.value)} />
@@ -153,7 +194,7 @@ export function Ekstre() {
             <td className="sag">{tl(borc)}</td>
             <td className="sag">{tl(alacak)}</td>
             <td className="sag">
-              <strong>{tl(hesap.icinde.length ? hesap.icinde[hesap.icinde.length - 1].bakiye : hesap.devreden)}</strong>
+              <strong>{tl(sonBakiye)}</strong>
             </td>
           </tr>
         </tfoot>
@@ -180,6 +221,7 @@ export function Ekstre() {
 
 export function Fis() {
   const id = Number(useParams().id)
+  const belgeRef = useRef<HTMLDivElement>(null)
   const veri = useLiveQuery(async () => {
     const h = await db.cariHareketler.get(id)
     if (!h) return { h: undefined }
@@ -199,8 +241,15 @@ export function Fis() {
   const tahsilat = h.tur === 'tahsilat'
 
   return (
-    <div className="belge fis">
-      <Araclar />
+    <div className="belge fis" ref={belgeRef}>
+      <Araclar
+        wp={{
+          belgeRef,
+          dosyaAdi: `${tahsilat ? 'Makbuz' : 'Fis'}-${h.belgeNo}`,
+          telefon: musteri?.telefon,
+          mesaj: `Sayın ${musteri?.ad ?? ''}, ${h.belgeNo} numaralı ${tahsilat ? 'tahsilat makbuzunuz' : 'satış fişiniz'} ektedir. Güncel bakiye: ${tl(sonrasi)}`,
+        }}
+      />
       <Baslik dukkan={dukkan!} belge={tahsilat ? 'TAHSİLAT MAKBUZU' : 'VERESİYE SATIŞ FİŞİ'} />
       {h.iptal && <div className="belge-iptal">İPTAL EDİLMİŞTİR — {h.iptalNedeni}</div>}
       <section className="belge-musteri">
